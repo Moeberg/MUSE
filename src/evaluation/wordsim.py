@@ -13,8 +13,8 @@ import torch
 from scipy.stats import spearmanr
 
 
-MONOLINGUAL_EVAL_PATH = 'data/monolingual'
-SEMEVAL17_EVAL_PATH = 'data/crosslingual/wordsim'
+MONOLINGUAL_EVAL_PATH = 'MUSE/data/monolingual'
+SEMEVAL17_EVAL_PATH = 'MUSE/data/crosslingual/wordsim'
 
 
 logger = getLogger()
@@ -81,7 +81,7 @@ def get_spearman_rho(word2id1, embeddings1, path, lower,
         score = u.dot(v) / (np.linalg.norm(u) * np.linalg.norm(v))
         gold.append(similarity)
         pred.append(score)
-    return spearmanr(gold, pred).correlation, len(gold), not_found
+    return spearmanr(gold, pred, nan_policy='omit').correlation, len(gold), not_found
 
 
 def get_wordsim_scores(language, word2id, embeddings, lower=True):

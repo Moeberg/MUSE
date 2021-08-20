@@ -156,3 +156,80 @@ def get_word_translation_accuracy(lang1, word2id1, emb1, lang2, word2id2, emb2, 
         results.append(('precision_at_%i' % k, precision_at_k))
 
     return results
+
+
+def get_word_translation_accuracy_extended(lang1, word2id1, emb1, lang2, word2id2, emb2, method, dico_eval):
+    """
+    Given source and target word embeddings, and a dictionary,
+    evaluate the translation accuracy using the precision@k.
+    """
+    if dico_eval == 'default':
+        path = os.path.join(DIC_EVAL_PATH, '%s-%s.5000-6500.txt' % (lang1, lang2))
+    else:
+        path = os.path.join(dico_eval, '%s-%s.txt' % (lang1, lang2))
+    dico = load_dictionary(path, word2id1, word2id2)
+    dico = dico.cuda() if emb1.is_cuda else dico
+
+    assert dico[:, 0].max() < emb1.size(0)
+    assert dico[:, 1].max() < emb2.size(0)
+
+    # normalize word embeddings
+    emb1 = emb1 / emb1.norm(2, 1, keepdim=True).expand_as(emb1)
+    emb2 = emb2 / emb2.norm(2, 1, keepdim=True).expand_as(emb2)
+
+    # nearest neighbors
+    if method == 'nn':
+        query = emb1[dico[:, 0]]
+        scores = query.mm(emb2.transpose(0, 1))
+
+    # inverted softmax
+    elif method.startswith('invsm_beta_'):
+        beta = float(method[len('invsm_beta_'):])
+        bs = 128
+        word_scores = []
+        for i in range(0, emb2.size(0), bs):
+            scores = emb1.mm(emb2[i:i + bs].transpose(0, 1))
+            scores.mul_(beta).exp_()
+            scores.div_(scores.sum(0, keepdim=True).expand_as(scores))
+            word_scores.append(scores.index_select(0, dico[:, 0]))
+        scores = torch.cat(word_scores, 1)
+
+    # contextual dissimilarity measure
+    elif method.startswith('csls_knn_'):
+        # average distances to k nearest neighbors
+        knn = method[len('csls_knn_'):]
+        assert knn.isdigit()
+        knn = int(knn)
+        average_dist1 = get_nn_avg_dist(emb2, emb1, knn)
+        average_dist2 = get_nn_avg_dist(emb1, emb2, knn)
+        average_dist1 = torch.from_numpy(average_dist1).type_as(emb1)
+        average_dist2 = torch.from_numpy(average_dist2).type_as(emb2)
+        # queries / scores
+        query = emb1[dico[:, 0]]
+        scores = query.mm(emb2.transpose(0, 1))
+        scores.mul_(2)
+        scores.sub_(average_dist1[dico[:, 0]][:, None])
+        scores.sub_(average_dist2[None, :])
+
+    else:
+        raise Exception('Unknown method: "%s"' % method)
+    
+    (top_matches_values, top_matches_indices) = scores.sort(dim=1, descending=True)
+    k = 5
+    
+    top_k_matches = top_matches_indices[:, :k]
+    expanded_dico = dico[:, 1][:, None].expand_as(top_k_matches)
+    _matching = (top_k_matches == expanded_dico).sum(1).cpu().numpy()
+    # allow for multiple possible translations
+    matching = {}
+    for i, src_id in enumerate(dico[:, 0].cpu().numpy()):
+        matching[src_id] = min(matching.get(src_id, 0) + _matching[i], 1)
+    # evaluate precision@k
+    precision_at_k = np.array(list(matching.values()))
+
+    expanded_dico = dico[:, 1][:, None].expand_as(top_matches_indices)
+    # mean reciprocal rank (mrr), or equivalently mean average precision (map)
+    mrr = 1.0 / ((top_matches_indices == expanded_dico).int().argmax(dim=1).float() + 1.0)
+    mrr = mrr.cpu().numpy()
+
+    return precision_at_k, mrr

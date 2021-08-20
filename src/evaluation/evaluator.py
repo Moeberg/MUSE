@@ -15,7 +15,7 @@ from . import get_wordsim_scores, get_crosslingual_wordsim_scores, get_wordanalo
 from . import get_word_translation_accuracy
 from . import load_europarl_data, get_sent_translation_accuracy
 from ..dico_builder import get_candidates, build_dictionary
-from src.utils import get_idf
+from ..utils import get_idf
 
 
 logger = getLogger()
